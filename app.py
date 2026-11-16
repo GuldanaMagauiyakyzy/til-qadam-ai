@@ -129,8 +129,26 @@ def create_tasks(client):
         max_output_tokens=1600
     )
     raw = response.output_text.strip()
-    raw = re.sub(r"^(?:json)?\s*|\s*$", "", raw)
-    data = json.loads(raw)
+   if not raw:
+        raise ValueError(
+            "ЖИ бос жауап қайтарды. "
+            "Тапсырманы қайта құрастыру қажет."
+        )
+
+    raw = re.sub(
+        r"^(?:json)?\s*|\s*$",
+        "",
+        raw
+    ).strip()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(
+            "ЖИ тапсырманы дұрыс форматта қайтармады. "
+            "JSON құрылымын тексеру қажет."
+        )
+
     tasks = data["tasks"]
     if len(tasks) != count:
         raise ValueError("Тапсырмалар саны сәйкес емес")
