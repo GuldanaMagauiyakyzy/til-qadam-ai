@@ -59,14 +59,35 @@ with st.form("settings"):
     )
 
 def fonts():
-    normal = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    if not os.path.exists(normal):
-        raise RuntimeError("PDF қарпі табылмады")
-    if "Kaz" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("Kaz", normal))
-    if "KazBold" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("KazBold", bold))
+    import os
+    import urllib.request
+
+    font_dir = "/tmp/til_qadam_fonts"
+    os.makedirs(font_dir, exist_ok=True)
+
+    font_files = {
+        "Kaz": (
+            "DejaVuSans.ttf",
+            "https://raw.githubusercontent.com/dejavu-fonts/"
+            "dejavu-fonts/version_2_37/ttf/DejaVuSans.ttf"
+        ),
+        "KazBold": (
+            "DejaVuSans-Bold.ttf",
+            "https://raw.githubusercontent.com/dejavu-fonts/"
+            "dejavu-fonts/version_2_37/ttf/DejaVuSans-Bold.ttf"
+        )
+    }
+
+    for font_name, (filename, url) in font_files.items():
+        path = os.path.join(font_dir, filename)
+
+        if not os.path.exists(path):
+            urllib.request.urlretrieve(url, path)
+
+        if font_name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(
+                TTFont(font_name, path)
+            )
 
 def create_tasks(client):
     prompt = f"""
