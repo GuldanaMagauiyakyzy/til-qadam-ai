@@ -280,6 +280,9 @@ if submitted:
                 images.append(create_picture(client, task))
             progress.progress((i+1)/len(tasks))
 
+        st.session_state.saved_tasks = tasks
+        st.session_state.saved_images = images
+        
         result_pdf = make_pdf(tasks, images)
 
         st.session_state.worksheet = {
@@ -314,5 +317,24 @@ if st.session_state.get("worksheet"):
 
     st.warning(
         "ЖИ жасаған материалды логопед тексеруі қажет. "
-        "Баланың жеке деректерін енгізбеңіз."
-    )
+        "Баланың жеке деректерін енгізбеңіз.")
+if (
+    st.session_state.get("saved_tasks")
+    and st.session_state.get("saved_images")
+):
+    if st.button("🔄 PDF-ті қайта құрастыру"):
+        try:
+            pdf_data = make_pdf(
+                st.session_state.saved_tasks,
+                st.session_state.saved_images
+            )
+            st.session_state.worksheet = {
+                "tasks": st.session_state.saved_tasks,
+                "images": st.session_state.saved_images,
+                "pdf": pdf_data
+            }
+            st.success("PDF дайын!")
+            st.rerun()
+        except Exception as e:
+            st.error("PDF жасау кезінде қате шықты.")
+            st.code(str(e))
