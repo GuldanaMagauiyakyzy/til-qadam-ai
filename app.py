@@ -1,239 +1,297 @@
+import base64
+import io
+import json
+import os
+import re
 import streamlit as st
 from openai import OpenAI
-import base64
-import re
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.colors import HexColor
+from PIL import Image
 
-st.set_page_config(
-    page_title="TIL QADAM AI",
-    page_icon="🗣️",
-    layout="wide"
-)
+st.set_page_config(page_title="TIL QADAM AI", page_icon="🗣️", layout="wide")
+
+st.markdown("""
+<style>
+.stApp {background:#f7f9ff}
+.block-container{max-width:1050px;padding-top:2rem}
+.sheet-title{color:#5337a7;font-size:28px;font-weight:800}
+.task-card{background:white;border:1px solid #ded9ff;
+border-radius:18px;padding:18px;margin:14px 0}
+</style>
+""", unsafe_allow_html=True)
 
 st.title("🗣️ TIL QADAM AI")
-st.write("Әр дыбыс – бір қадам, әр қадам – үлкен жетістік!")
-st.caption("Логопедтерге арналған ЖИ платформасы")
+st.caption("Әр дыбыс – бір қадам, әр қадам – үлкен жетістік!")
+st.subheader("🎨 Суреттермен безендірілген жұмыс парағы")
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+st.info(
+    "ЖИ тапсырмалар мен суреттерді жасайды. "
+    "Әр сурет API балансынан қаражат жұмсайды. "
+    "Алғашқы сынаққа 1 тапсырма таңдаңыз."
+)
 
-WORDS = {
-    "Ш": ["Шар", "Шана", "Шие", "Шаш", "Шелек"],
-    "С": ["Су", "Сағат", "Сәбіз", "Сиыр", "Сөмке"],
-    "Л": ["Алма", "Бала", "Балық", "Лақ", "Гүл"],
-    "Р": ["Ара", "Арба", "Қар", "Тарақ", "Орамал"],
-    "Ж": ["Жалау", "Жапырақ", "Жүзім", "Жол", "Жастық"],
-    "З": ["Зымыран", "Зәулім үй", "Қаз", "Көз", "Қыз"],
-    "Қ": ["Қасық", "Қоян", "Қалам", "Қар", "Қайық"],
-    "Ғ": ["Ағаш", "Таға", "Сағат", "Қағаз", "Жаға"],
-    "Ң": ["Аң", "Таң", "Шаң", "Қоңырау", "Жаңғақ"]
-}
+SOUNDS = ["Ш", "С", "Л", "Р", "Ж", "З", "Қ", "Ғ", "Ң"]
+STAGES = [
+    "Буындар", "Сөздер", "Сөз тіркестері",
+    "Сөйлемдер", "Сурет бойынша әңгіме",
+    "Дыбыстарды ажырату"
+]
 
-if "tasks" not in st.session_state:
-    st.session_state.tasks = ""
-
-if "picture" not in st.session_state:
-    st.session_state.picture = None
-
-if "picture_word" not in st.session_state:
-    st.session_state.picture_word = ""
-
-tab1, tab2 = st.tabs([
-    "✨ Тапсырма генераторы",
-    "🖼️ Суретті тапсырмалар"
-])
-
-with tab1:
-    st.header("Ақылды тапсырма генераторы")
-
-    age = st.selectbox(
-        "Баланың жасы", [3, 4, 5, 6, 7], index=2
+with st.form("settings"):
+    c1, c2, c3 = st.columns(3)
+    age = c1.selectbox("Баланың жасы", [3,4,5,6,7], index=2)
+    sound = c2.selectbox("Мақсатты дыбыс", SOUNDS)
+    stage = c3.selectbox("Машықтандыру кезеңі", STAGES, index=3)
+    level = c1.selectbox("Күрделілік", ["Жеңіл", "Орташа", "Күрделі"])
+    count = c2.number_input(
+        "Тапсырма саны", min_value=1, max_value=4, value=1
+    )
+    color_mode = c3.selectbox(
+        "Безендіру", ["Түрлі түсті", "Ақ-қара"]
+    )
+    submitted = st.form_submit_button(
+        "✨ Суретті жұмыс парағын құрастыру",
+        type="primary"
     )
 
-    sound = st.selectbox(
-        "Мақсатты дыбыс", list(WORDS.keys())
-    )
+def fonts():
+    normal = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    if not os.path.exists(normal):
+        raise RuntimeError("PDF қарпі табылмады")
+    if "Kaz" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("Kaz", normal))
+    if "KazBold" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("KazBold", bold))
 
-    stage = st.selectbox(
-        "Машықтандыру кезеңі",
-        [
-            "Буындар",
-            "Сөздер",
-            "Сөз тіркестері",
-            "Сөйлемдер",
-            "Сурет бойынша әңгіме",
-            "Дыбыстарды ажырату"
-        ]
-    )
+def create_tasks(client):
+    prompt = f"""
+Қазақ тілінде логопедиялық жұмыс парағын құрастыр.
 
-    level = st.selectbox(
-        "Күрделілік деңгейі",
-        ["Жеңіл", "Орташа", "Күрделі"]
-    )
-
-    count = st.number_input(
-        "Тапсырма саны",
-        min_value=1,
-        max_value=10,
-        value=5
-    )
-
-    if st.button("✨ Тапсырма құрастыру", type="primary"):
-        prompt = f"""
-Сен қазақ тіліндегі логопедиялық тапсырмаларды
-құрастыратын әдістемелік көмекшісің.
-
-Баланың жасы: {age}
-Мақсатты дыбыс: {sound}
+Жасы: {age}
+Дыбыс: {sound}
 Кезең: {stage}
-Күрделілік: {level}
+Деңгей: {level}
 Тапсырма саны: {count}
 
-Міндетті талаптар:
-1. Тек қазақ тілінде жаз.
-2. Дәл {count} тапсырма құрастыр.
-3. Тек таңдалған кезеңге сәйкес тапсырма бер.
-4. Буын кезеңінде сөздер мен сөйлемдерді араластырма.
-5. Сөз кезеңінде нақты қазақша сөздерді қолдан.
-6. Мақсатты дыбыс сөзде немесе буында болуы тиіс.
-7. Жас ерекшелігі мен күрделілікті ескер.
-8. Әр тапсырмаға қысқа нұсқаулық бер.
-9. Ойдан шығарылған сөздерді қолданба.
-10. Сурет жоқ болса, сурет бар деп көрсетпе.
-11. Диагноз қойма.
-12. Дыбыстарды ажыратуда екінші дыбысты көрсет.
-13. Нәтижені нөмірленген тапсырмалар түрінде бер.
+Тек JSON қайтар:
+{{"tasks":[{{"title":"Тақырып",
+"instruction":"Нұсқаулық",
+"text":"Тапсырманың негізгі мәтіні",
+"image_prompt":"English description of the illustration"}}]}}
+
+Талаптар:
+1. Дәл {count} тапсырма құрастыр.
+2. Барлық мәтін қазақ тілінде болсын.
+3. Тек таңдалған кезеңге сәйкес материал бер.
+4. Сөздер табиғи әрі фонетикалық дұрыс болсын.
+5. Мақсатты {sound} дыбысы материалда болсын.
+6. Әр сурет тапсырманың мағынасын дәл көрсетсін.
+7. Суреттің ішіне жазу енгізбе.
+8. Сөйлемдер қысқа әрі түсінікті болсын.
+9. «Шынар шырын ішті» сөйлемінде
+қыз шырынды стаканнан ішіп отыруы керек.
+10. Диагноз қойма.
 """
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        instructions=(
+            "Сен қазақша логопедиялық материал "
+            "құрастыратын әдістемелік көмекшісің. "
+            "Тек жарамды JSON қайтар."
+        ),
+        input=prompt,
+        max_output_tokens=1600
+    )
+    raw = response.output_text.strip()
+    raw = re.sub(r"^(?:json)?\s*|\s*$", "", raw)
+    data = json.loads(raw)
+    tasks = data["tasks"]
+    if len(tasks) != count:
+        raise ValueError("Тапсырмалар саны сәйкес емес")
+    for task in tasks:
+        for key in ["title", "instruction", "text", "image_prompt"]:
+            if key not in task:
+                raise ValueError("Тапсырма құрылымы толық емес")
+    return tasks
 
-        try:
-            with st.spinner("Тапсырмалар жасалып жатыр..."):
-                response = client.responses.create(
-                    model="gpt-4.1-mini",
-                    instructions=(
-                        "Сен қазақ тілінің фонетикасын "
-                        "ескеретін логопедиялық көмекшісің."
-                    ),
-                    input=prompt,
-                    max_output_tokens=2200
-                )
+def create_picture(client, task):
+    style = (
+        "Black and white clean line art for coloring."
+        if color_mode == "Ақ-қара"
+        else "Friendly colorful children's illustration."
+    )
+    prompt = (
+        "Preschool speech therapy worksheet illustration. "
+        + task["image_prompt"]
+        + ". Show the action and objects accurately. "
+        + "No text, no letters, no watermark. "
+        + style
+    )
+    response = client.images.generate(
+        model="gpt-image-1-mini",
+        prompt=prompt,
+        size="1024x1024",
+        n=1
+    )
+    return base64.b64decode(response.data[0].b64_json)
 
-            st.session_state.tasks = response.output_text
+def wrap_words(text, font, size, width):
+    lines = []
+    line = ""
+    for word in text.split():
+        candidate = (line + " " + word).strip()
+        if line and pdfmetrics.stringWidth(
+            candidate, font, size
+        ) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        lines.append(line)
+    return lines
 
-        except Exception as e:
-            st.error("Тапсырма құрастыру мүмкін болмады.")
-            st.code(str(e))
+def make_pdf(tasks, images):
+    fonts()
+    from reportlab.lib.pagesizes import A4
+    W, H = A4
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
 
-    if st.session_state.tasks:
-        st.success("Тапсырмалар дайын!")
-        st.markdown(st.session_state.tasks)
-
-        plain_text = re.sub(
-            r"\\(.?)\\*", r"\1",
-            st.session_state.tasks
-        )
-
-        st.download_button(
-            "📥 Мәтінді жүктеу",
-            data=plain_text,
-            file_name="til_qadam_tapsyrmalar.txt",
-            mime="text/plain"
-        )
-
-with tab2:
-    st.header("🖼️ Суретті тапсырмалар")
-
-    picture_sound = st.selectbox(
-        "Дыбысты таңдаңыз",
-        list(WORDS.keys()),
-        key="picture_sound"
+    purple = HexColor(
+        "#6042A8" if color_mode == "Түрлі түсті" else "#222222"
+    )
+    pale = HexColor(
+        "#F0EBFF" if color_mode == "Түрлі түсті" else "#F4F4F4"
     )
 
-    word = st.selectbox(
-        "Суретке арналған сөз",
-        WORDS[picture_sound]
+    for index, (task, img) in enumerate(zip(tasks, images)):
+        pdf.setFillColor(pale)
+        pdf.roundRect(
+            28, H-112, W-56, 82, 16,
+            fill=1, stroke=0
+        )
+
+        pdf.setFillColor(purple)
+        pdf.setFont("KazBold", 18)
+        pdf.drawString(46, H-63, "TIL QADAM AI")
+
+        pdf.setFont("Kaz", 11)
+        pdf.drawString(
+            46, H-87,
+            f"{sound} дыбысы • {age} жас • {stage}"
+        )
+
+        pdf.setFont("KazBold", 15)
+        y = H-150
+
+        title = f"{index+1}-тапсырма. {task['title']}"
+        for line in wrap_words(title, "KazBold", 15, W-96)[:2]:
+            pdf.drawString(46, y, line)
+            y -= 22
+
+        pdf.setFillColor(HexColor("#222222"))
+        pdf.setFont("Kaz", 11)
+
+        for line in wrap_words(
+            task["instruction"], "Kaz", 11, W-96
+        )[:3]:
+            pdf.drawString(46, y-7, line)
+            y -= 17
+
+        picture = Image.open(io.BytesIO(img)).convert("RGB")
+        iw, ih = picture.size
+        scale = min((W-100)/iw, 385/ih)
+        dw, dh = iw*scale, ih*scale
+
+        top = min(y-25, H-230)
+        pdf.drawImage(
+            ImageReader(picture),
+            (W-dw)/2, top-dh, dw, dh
+        )
+
+        text_y = top-dh-30
+        pdf.setFillColor(purple)
+        pdf.setFont("KazBold", 16)
+
+        for line in wrap_words(
+            task["text"], "KazBold", 16, W-110
+        )[:4]:
+            if text_y < 75:
+                break
+            pdf.drawCentredString(W/2, text_y, line)
+            text_y -= 23
+
+        pdf.setFillColor(HexColor("#777777"))
+        pdf.setFont("Kaz", 8)
+        pdf.drawCentredString(
+            W/2, 36,
+            "ЖИ материалын логопед қолданар алдында тексереді"
+        )
+        pdf.showPage()
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+if submitted:
+    st.session_state.pop("worksheet", None)
+    try:
+        client = OpenAI(
+            api_key=st.secrets["OPENAI_API_KEY"]
+        )
+
+        with st.spinner("Тапсырмалар құрастырылуда..."):
+            tasks = create_tasks(client)
+
+        images = []
+        progress = st.progress(0)
+
+        for i, task in enumerate(tasks):
+            with st.spinner(
+                f"{i+1}/{len(tasks)}: сурет жасалып жатыр..."
+            ):
+                images.append(create_picture(client, task))
+            progress.progress((i+1)/len(tasks))
+
+        result_pdf = make_pdf(tasks, images)
+
+        st.session_state.worksheet = {
+            "tasks": tasks,
+            "images": images,
+            "pdf": result_pdf
+        }
+
+    except Exception as e:
+        st.error("Жұмыс парағын жасау кезінде қате шықты.")
+        st.code(str(e))
+
+if st.session_state.get("worksheet"):
+    ws = st.session_state.worksheet
+    st.success("Суретті жұмыс парағы дайын!")
+
+    for i, (task, img) in enumerate(
+        zip(ws["tasks"], ws["images"])
+    ):
+        st.markdown(f"### {i+1}-тапсырма. {task['title']}")
+        st.write(task["instruction"])
+        st.image(img, width=440)
+        st.markdown(f"### {task['text']}")
+
+    st.download_button(
+        "📄 А4 жұмыс парағын PDF жүктеу",
+        data=ws["pdf"],
+        file_name="til_qadam_zhumys_paragy.pdf",
+        mime="application/pdf",
+        type="primary"
     )
 
-    method = st.radio(
-        "Суретті таңдау әдісі",
-        [
-            "🤖 ЖИ арқылы сурет жасау",
-            "📁 Өз суретімді жүктеу"
-        ]
+    st.warning(
+        "ЖИ жасаған материалды логопед тексеруі қажет. "
+        "Баланың жеке деректерін енгізбеңіз."
     )
-
-    if method == "🤖 ЖИ арқылы сурет жасау":
-        st.info(
-            "ЖИ сурет генерациясы API балансынан "
-            "қосымша қаражат жұмсайды."
-        )
-
-        if st.button("🎨 Сурет жасау", type="primary"):
-            try:
-                with st.spinner("Сурет жасалып жатыр..."):
-                    response = client.images.generate(
-                        model="gpt-image-1-mini",
-                        prompt=(
-                            "Create one clear, simple educational "
-                            "illustration for a preschool speech "
-                            "therapy picture card. "
-                            f"Object: {word}. "
-                            "Use the Kazakh meaning of this word. "
-                            "Single recognizable subject, "
-                            "white background, clean outlines, "
-                            "child-friendly style, no letters, "
-                            "no text, no watermark."
-                        ),
-                        size="1024x1024",
-                        n=1
-                    )
-
-                    image_bytes = base64.b64decode(
-                        response.data[0].b64_json
-                    )
-
-                    st.session_state.picture = image_bytes
-                    st.session_state.picture_word = word
-
-            except Exception as e:
-                st.error("Сурет жасау кезінде қате шықты.")
-                st.code(str(e))
-
-    else:
-        uploaded = st.file_uploader(
-            "Суретті жүктеңіз",
-            type=["png", "jpg", "jpeg"]
-        )
-
-        if uploaded is not None:
-            st.session_state.picture = uploaded.getvalue()
-            st.session_state.picture_word = word
-
-    if st.session_state.picture:
-        st.subheader("Дайын сурет")
-
-        st.image(
-            st.session_state.picture,
-            width=320
-        )
-
-        show_word = st.checkbox(
-            "Суреттің астына сөзді жазу",
-            value=True
-        )
-
-        if show_word:
-            st.markdown(
-                f"### {st.session_state.picture_word}"
-            )
-
-        st.download_button(
-            "📥 Суретті жүктеу",
-            data=st.session_state.picture,
-            file_name="til_qadam_suret.png",
-            mime="image/png"
-        )
-
-st.divider()
-st.caption(
-    "ЖИ жасаған тапсырмалар мен суреттерді "
-    "қолданар алдында логопед тексеруі қажет. "
-    "Баланың жеке деректерін енгізбеңіз."
-)
