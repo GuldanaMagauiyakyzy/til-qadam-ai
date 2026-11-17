@@ -65,24 +65,23 @@ def fonts():
     font_dir = "/tmp/til_qadam_fonts"
     os.makedirs(font_dir, exist_ok=True)
 
+    base_url = (
+        "https://raw.githubusercontent.com/google/fonts/"
+        "main/ofl/notosans/"
+    )
+
     font_files = {
-        "Kaz": (
-            "DejaVuSans.ttf",
-            "https://raw.githubusercontent.com/dejavu-fonts/"
-            "dejavu-fonts/version_2_37/ttf/DejaVuSans.ttf"
-        ),
-        "KazBold": (
-            "DejaVuSans-Bold.ttf",
-            "https://raw.githubusercontent.com/dejavu-fonts/"
-            "dejavu-fonts/version_2_37/ttf/DejaVuSans-Bold.ttf"
-        )
+        "Kaz": "NotoSans-Regular.ttf",
+        "KazBold": "NotoSans-Bold.ttf"
     }
 
-    for font_name, (filename, url) in font_files.items():
+    for font_name, filename in font_files.items():
         path = os.path.join(font_dir, filename)
 
         if not os.path.exists(path):
-            urllib.request.urlretrieve(url, path)
+            urllib.request.urlretrieve(
+                base_url + filename, path
+            )
 
         if font_name not in pdfmetrics.getRegisteredFontNames():
             pdfmetrics.registerFont(
