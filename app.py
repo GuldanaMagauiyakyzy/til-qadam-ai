@@ -134,14 +134,7 @@ def create_tasks(client):
         },
         max_output_tokens=3000
     )
-        instructions=(
-            "Сен қазақша логопедиялық материал "
-            "құрастыратын әдістемелік көмекшісің. "
-            "Тек жарамды JSON қайтар."
-        ),
-        input=prompt,
-        max_output_tokens=1600
-    )
+        
     raw = response.output_text.strip()
    if not raw:
         raise ValueError(
