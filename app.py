@@ -121,6 +121,20 @@ def create_tasks(client):
     response = client.responses.create(
         model="gpt-4.1-mini",
         instructions=(
+            "Сен қазақ тіліндегі логопедиялық тапсырмаларды "
+            "құрастыратын кәсіби әдістемелік көмекшісің. "
+            "Тек жарамды JSON объектісін қайтар. "
+            "Жауапта tasks массиві міндетті түрде болсын."
+        ),
+        input=prompt,
+        text={
+            "format": {
+                "type": "json_object"
+            }
+        },
+        max_output_tokens=3000
+    )
+        instructions=(
             "Сен қазақша логопедиялық материал "
             "құрастыратын әдістемелік көмекшісің. "
             "Тек жарамды JSON қайтар."
