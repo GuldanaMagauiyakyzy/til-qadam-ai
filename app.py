@@ -370,3 +370,44 @@ if (
         except Exception as e:
             st.error("PDF жасау кезінде қате шықты.")
             st.code(str(e))
+
+
+if st.button("🧪 PDF жүйесін тегін тексеру"):
+    try:
+        from PIL import ImageDraw
+
+        test_image = Image.new("RGB", (600, 600), "white")
+        draw = ImageDraw.Draw(test_image)
+        draw.rectangle(
+            (100, 100, 500, 500),
+            outline="purple",
+            width=8
+        )
+
+        buffer = io.BytesIO()
+        test_image.save(buffer, format="PNG")
+
+        test_tasks = [{
+            "title": "Сөйлемді қайтала",
+            "instruction": "Сөйлемді анық айт.",
+            "text": "Шынар шырын ішті.",
+            "image_prompt": ""
+        }]
+
+        pdf_data = make_pdf(
+            test_tasks,
+            [buffer.getvalue()]
+        )
+
+        st.success("PDF жүйесі дұрыс жұмыс істейді!")
+
+        st.download_button(
+            "📄 Сынақ PDF файлын жүктеу",
+            data=pdf_data,
+            file_name="til_qadam_test.pdf",
+            mime="application/pdf"
+        )
+
+    except Exception as e:
+        st.error("PDF жүйесінде қате бар.")
+        st.code(str(e))
