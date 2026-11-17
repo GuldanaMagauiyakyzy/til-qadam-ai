@@ -1,140 +1,174 @@
-import re
 import io
-import html
+import json
+from datetime import date
 from pathlib import Path
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, KeepTogether
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
-def make_pdf(content):
-    font_dir = Path(__file__).resolve().parent / "fonts"
-    regular = font_dir / "DejaVuSans.ttf"
-    bold = font_dir / "DejaVuSans-Bold.ttf"
-    if not regular.exists() or not bold.exists():
-        raise FileNotFoundError("fonts қалтасындағы DejaVuSans қаріптері табылмады")
-    if "Kaz" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("Kaz", str(regular)))
-    if "KazBold" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("KazBold", str(bold)))
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=43, leftMargin=43, topMargin=48, bottomMargin=48, title="Жеке түзету-дамыту бағдарламасы")
-    base = ParagraphStyle("KazBody", fontName="Kaz", fontSize=9.5, leading=15, spaceAfter=7, textColor=colors.HexColor("#26363B"))
-    heading = ParagraphStyle("KazHeading", parent=base, fontName="KazBold", fontSize=11, leading=17, spaceBefore=12, spaceAfter=7, textColor=colors.HexColor("#176D76"))
-    title = ParagraphStyle("KazTitle", parent=heading, fontSize=15, leading=22, alignment=TA_CENTER, spaceAfter=20)
-    story = [Paragraph("ЖЕКЕ ТҮЗЕТУ-ДАМЫТУ БАҒДАРЛАМАСЫ", title), Paragraph("ЖИ әзірлеген жоба. Маман тексеріп, бекітуі қажет.", base), Spacer(1, 10)]
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line:
-            story.append(Spacer(1, 6)); continue
-        is_heading = line.startswith("#") or bool(re.match(r"^\d+\.\s+\S", line))
-        line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
-        line = re.sub(r"^[-*]\s+", "• ", line)
-        story.append(Paragraph(html.escape(line), heading if is_heading else base))
-    def page_number(canvas, document):
-        canvas.setFont("Kaz", 8)
-        canvas.setFillColor(colors.grey)
-        canvas.drawRightString(A4[0] - 43, 28, f"{document.page}")
-    doc.build(story, onFirstPage=page_number, onLaterPages=page_number)
-    return buffer.getvalue()
+from xml.sax.saxutils import escape
 
 import streamlit as st
 from openai import OpenAI
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-st.set_page_config(page_title='LOGO PLAN AI', page_icon='🧩', layout='wide')
-st.markdown('''<style>
-.stApp {background:#f7fafc}
-.block-container {max-width:1000px;padding-top:2rem}
-h1,h2,h3 {color:#176d76}
-div[data-testid="stForm"] {background:white;padding:18px;border-radius:16px;border:1px solid #d9e8ea}
-</style>''', unsafe_allow_html=True)
-st.title('🧩 LOGO PLAN AI')
-st.write('Логопед пен дефектологқа арналған 3 немесе 6 айлық жеке түзету-дамыту бағдарламасын әзірлеуге арналған ЖИ көмекші')
-st.caption('ЖИ маманның жұмысын қолдайды, бірақ кәсіби бағалауды алмастырмайды.')
+st.set_page_config(page_title="LOGO PLAN AI", page_icon="🧩", layout="wide")
+st.markdown("""<style>.block-container{max-width:1100px;padding-top:2rem}h1,h2,h3{color:#176d76}</style>""", unsafe_allow_html=True)
+st.title("🧩 LOGO PLAN AI")
+st.write("ПМПК қорытындысы мен бастапқы диагностика негізінде 3 немесе 6 айлық жеке түзету-дамыту бағдарламасының жобасын құрастыру")
+st.caption("ЖИ маманның кәсіби бағалауын алмастырмайды. Нақты баланың жеке деректерін енгізбеңіз.")
 
-if 'generated_plan' not in st.session_state:
-    st.session_state.generated_plan = ''
+if "program" not in st.session_state:
+    st.session_state.program = None
 
-with st.form('plan_form'):
-    col1, col2 = st.columns(2)
-    with col1:
-        specialist = st.selectbox('Маман бағыты', ['Логопед', 'Дефектолог'])
-        age = st.selectbox('Баланың жасы', [2, 3, 4, 5, 6, 7, 8, 9, 10], index=3)
-        duration = st.selectbox('Бағдарлама мерзімі', ['3 ай', '6 ай'])
-    with col2:
-        level = st.selectbox('Қолдау деңгейі', ['Көп қолдау қажет', 'Ішінара қолдау қажет', 'Өздігінен орындайды'])
-        focus = st.text_input('Түзету-дамыту жұмысының негізгі бағыттары', placeholder='Мысалы: фонематикалық қабылдау, дыбыс айту, байланыстырып сөйлеу')
-        strengths = st.text_area('Бала орындай алатын дағдылар (аты-жөнін жазбаңыз)', placeholder='Мысалы: нұсқауды түсінеді, суреттегі заттарды атайды', height=90)
-    difficulties = st.text_area('Жұмысты қажет ететін дағдылар', placeholder='Мысалы: Ш дыбысын сөйлемде С дыбысымен алмастырады', height=90)
-    submitted = st.form_submit_button('✨ Жеке түзету-дамыту бағдарламасын құрастыру', type='primary')
+with st.form("program_form"):
+    left, right = st.columns(2)
+    with left:
+        specialist = st.selectbox("Маман бағыты", ["Логопед", "Дефектолог"])
+        age = st.selectbox("Баланың жасы", list(range(2, 18)), index=3)
+        motivation = st.selectbox("Баланың ынтасы", ["Жоғары", "Орташа", "Төмен", "Тұрақсыз", "Нақтылау қажет"])
+    with right:
+        duration = st.selectbox("Бағдарлама мерзімі", ["3 ай", "6 ай"])
+        pmpk = st.text_area("ПМПК қорытындысы", placeholder="Қорытындыдағы маңызды тұжырымдарды жеке деректерсіз енгізіңіз", height=115)
+    baseline = st.text_area("Баланың жалпы ерекшеліктері және бастапқы диагностика", placeholder="Қалыптасқан дағдылары, сөйлеу/танымдық ерекшеліктері, нұсқауды түсінуі, мінез-құлқы...", height=130)
+    needs = st.text_area("Түзету жұмысын қажет ететін дағдылар", placeholder="Мысалы: фонематикалық қабылдау, дыбыс айту, сөздік қор...", height=110)
+    submit = st.form_submit_button("✨ Жеке түзету-дамыту бағдарламасын құрастыру", type="primary")
 
-if submitted:
-    if not focus.strip() or not difficulties.strip():
-        st.warning('Негізгі жұмыс бағыты мен жұмысты қажет ететін дағдыларды толтырыңыз.')
+if submit:
+    if not pmpk.strip() or not baseline.strip() or not needs.strip():
+        st.warning("ПМПК қорытындысын, бастапқы диагностиканы және түзетуді қажет ететін дағдыларды толтырыңыз.")
     else:
-        try:
-            client = OpenAI(api_key=st.secrets['OPENAI_API_KEY'])
-            prompt = f'''Маман бағыты: {specialist}
-Жасы: {age}
+        prompt = f"""Маман: {specialist}
+Жас: {age}
+Ынта: {motivation}
 Бағдарлама мерзімі: {duration}
-Қолдау деңгейі: {level}
-Негізгі бағыт: {focus}
-Қалыптасқан дағдылар: {strengths or 'Көрсетілмеген'}
-Жұмысты қажет ететін дағдылар: {difficulties}
+ПМПК қорытындысы: {pmpk}
+Бастапқы диагностика және жалпы ерекшеліктері: {baseline}
+Түзетуді қажет ететін дағдылар: {needs}
 
-Тек қазақ тілінде 3 немесе 6 айға арналған БАЛАНЫҢ ЖЕКЕ ТҮЗЕТУ-ДАМЫТУ БАҒДАРЛАМАСЫНЫҢ жобасын жаса.
-Бұл бір сабақтың конспектісі ЕМЕС. Әр айға бөлінген ұзақ мерзімді түзету-дамыту бағдарламасы болуы керек.
-Маман бағытына сай салаларды таңда: логопед үшін сөйлеуді түсіну, сөздік қор, грамматикалық құрылым, байланыстырып сөйлеу, дыбыс айту, фонематикалық процестер және қажет болса сөйлеудің моторлық компоненттері; дефектолог үшін қабылдау, зейін, есте сақтау, ойлау, ұсақ моторика, оқу әрекетіне алғышарттар. Барлық саланы мәжбүрлі түрде қоспа, тек берілген деректерге қатыстысын таңда.
-Мына бөлімдер міндетті:
-1. Бағдарлама паспорты: маман бағыты, жас, мерзім, басым бағыттар (жеке деректерсіз).
-2. Түсінік хат: бағдарламаның өзектілігі, баланың бастапқы даму деңгейі, қалыптасқан және дамытуға қажет дағдылар. Диагноз бен нормативтік құжаттарды ойдан қоспа. Белгісіз тұстарды «нақтылау қажет» деп көрсет.
-3. Бағдарламаның жалпы мақсаты және 3–6 өлшенетін жеке міндет.
-4. Түзету-дамыту жұмысының мазмұны: қалыптасқан дағдылар және дамытуға қажет дағдылар. Белгісіз тұстарды «нақтылау қажет» деп көрсет.
-5. Кесте: «Түзету бағыты | Бастапқы деңгей | Мақсат | Жұмыс мазмұны/әдістер | Күтілетін нәтиже | Бағалау көрсеткіші».
-6. Айлық кезеңдер: дәл {duration} мерзіміне сәйкес әр айды жеке көрсет, әр айда басым мақсат, жұмыс мазмұны және аралық нәтиже болсын. Алдыңғы дағдылар қалыптаспай тұрып келесі күрделі кезеңге автоматты көшпе.
-7. Бастапқы, аралық және қорытынды мониторинг: өлшемдер, бақылау тәсілі, қажет болғанда бағдарламаны қайта қарау шарттары.
-8. Ата-анамен жұмыс: үйде қолдануға болатын қысқа, нақты ұсыныстар.
-Жаттығуларды бір сабаққа арналған минуттық конспект ретінде жазба.
-Күтілетін нәтижелерді кепілдендірме, баланың жеке даму қарқынын ескер.
-Диагноз қойма, берілмеген фактілерді ойдан қоспа, тек маманның бекітуіне арналған жоба ұсын.
-'''
-            with st.spinner('ЖИ түзету-дамыту бағдарламасын дайындап жатыр...'):
+Маман тексеретін ЖЕКЕ ТҮЗЕТУ-ДАМЫТУ БАҒДАРЛАМАСЫНЫҢ жобасын құрастыр.
+Бұл сабақ жоспары ЕМЕС. Мерзімді айларға БӨЛМЕ. Барлық жол үшін бір ғана ортақ мерзім — {duration}.
+ПМПК мен диагностикаға сүйен. Берілмеген диагноз, қабілет, дерек, нәтиже ойдан шығарылмасын.
+Тек осы балаға сәйкес келетін бағыттарды таңда. 5–10 мазмұнды, бір-бірінен бөлек мақсат құрастыр.
+Мақсаттар мен күтілетін нәтижелер нақты, бақылауға келетін және қолжетімді болсын; нәтижеге кепілдік берме.
+Әр жолда 'direction' (дамыту бағыты), 'goal' (мақсат), 'expected' (күтілетін нәтиже) болсын.
+'achievement' және 'notes' жолдары БОС болсын: маман кейін өзі толтырады.
+Жауап ТЕК мына JSON объектісі болсын:
+{{"rows":[{{"direction":"...","goal":"...","expected":"...","achievement":"","notes":""}}]}}
+"""
+        try:
+            client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+            with st.spinner("Бағдарлама әзірленіп жатыр..."):
                 response = client.responses.create(
-                    model='gpt-4.1-mini',
-                    instructions='Сен қазақ тілінде жұмыс істейтін логопедиялық және дефектологиялық әдістемелік көмекшісің. Диагноз қоймайсың. Маманның кәсіби тексеруін талап етесің.',
+                    model="gpt-4.1-mini",
+                    instructions="Қазақ тілінде жұмыс істейтін логопед және дефектологтың әдістемелік көмекшісісің. Тек дұрыс JSON қайтар. Диагноз қойма, айларға бөлме.",
                     input=prompt,
-                    max_output_tokens=3000,
+                    text={"format": {"type": "json_object"}},
+                    max_output_tokens=3500,
                 )
-            result = (response.output_text or '').strip()
-            if not result:
-                st.error('ЖИ бос жауап қайтарды. Кейінірек қайталап көріңіз.')
-            else:
-                st.session_state.generated_plan = result
-                st.success('Бағдарлама дайын!')
+            result = json.loads(response.output_text)
+            rows = result.get("rows", [])
+            if not isinstance(rows, list) or not rows:
+                raise ValueError("ЖИ кесте жолдарын қайтармады")
+            cleaned = []
+            for item in rows:
+                if isinstance(item, dict):
+                    cleaned.append({
+                        "Бағыты": str(item.get("direction", "")),
+                        "Мақсаты": str(item.get("goal", "")),
+                        "Күтілетін нәтиже": str(item.get("expected", "")),
+                        "Жетістік белгісі": "",
+                        "Ескертулер": "",
+                    })
+            if not cleaned:
+                raise ValueError("Кесте бос")
+            st.session_state.program = {"specialist": specialist, "age": age, "motivation": motivation,
+                                        "duration": duration, "pmpk": pmpk, "baseline": baseline,
+                                        "needs": needs, "rows": cleaned}
+            st.success("Бағдарлама жобасы дайын!")
         except Exception as exc:
-            st.error('Бағдарламаны жасау кезінде қате шықты. API баптауларын және балансты тексеріңіз.')
-            with st.expander('Қате туралы техникалық ақпарат'):
+            st.error("ЖИ жауап беру кезінде қате шықты. API кілтін, балансты және интернетті тексеріңіз.")
+            with st.expander("Техникалық ақпарат"):
                 st.code(str(exc))
 
-if st.session_state.generated_plan:
-    st.subheader('📋 Жеке түзету-дамыту бағдарламасының жобасы')
-    st.markdown(st.session_state.generated_plan)
-    edited = st.text_area('✏️ Қажет болса, бағдарламаны өңдеңіз', value=st.session_state.generated_plan, height=350)
-    clean = re.sub(r'\*\*(.*?)\*\*', r'\1', edited)
-    st.download_button('📥 Бағдарламаны TXT форматында жүктеу', data=clean, file_name='logo_plan_ai_bagdarlama.txt', mime='text/plain; charset=utf-8')
+
+def register_fonts():
+    font_dir = Path(__file__).resolve().parent / "fonts"
+    for name, filename in [("Kaz", "DejaVuSans.ttf"), ("KazBold", "DejaVuSans-Bold.ttf")]:
+        path = font_dir / filename
+        if not path.is_file():
+            raise FileNotFoundError(f"Қаріп табылмады: fonts/{filename}")
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(path)))
+
+
+def make_pdf(program, rows):
+    register_fonts()
+    out = io.BytesIO()
+    doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    body = ParagraphStyle("BodyKaz", fontName="Kaz", fontSize=8.2, leading=12, spaceAfter=5)
+    title = ParagraphStyle("TitleKaz", parent=body, fontName="KazBold", fontSize=13, leading=19, alignment=TA_CENTER, spaceAfter=15)
+    head = ParagraphStyle("HeadKaz", parent=body, fontName="KazBold", fontSize=8.1, leading=11)
+    small = ParagraphStyle("SmallKaz", parent=body, fontSize=7.4, leading=11)
+    def p(value, style=body):
+        return Paragraph(escape(str(value or "" )).replace("\n", "<br/>"), style)
+    story = [p("ЖЕКЕ ТҮЗЕТУ-ДАМЫТУ БАҒДАРЛАМАСЫ", title)]
+    info = [
+        ("Бағдарламаның құрылған күні", date.today().strftime("%d.%m.%Y")),
+        ("Баланың аты-жөні", "________________________________"),
+        ("Туған жылы", "________________"),
+        ("ПМПК қорытындысы", program["pmpk"]),
+        ("Маман", program["specialist"]),
+        ("Бағдарлама мерзімі", program["duration"]),
+        ("Баланың жасы", f'{program["age"]} жас'),
+        ("Баланың ынтасы", program["motivation"]),
+    ]
+    for label, value in info:
+        story.append(p(f"{label}: {value}"))
+    story.append(Spacer(1, 12))
+    headers = ["Мерзімі", "Даму жұмыстарының бағыттары, мақсат және күтілетін нәтиже", "Жетістік белгісі", "Ескертулер"]
+    data = [[p(x, head) for x in headers]]
+    for i, item in enumerate(rows):
+        content = [p(item.get("Бағыты", ""), head), p("Мақсаты: " + item.get("Мақсаты", ""), small), p("Күтілетін нәтиже: " + item.get("Күтілетін нәтиже", ""), small)]
+        data.append([p(program["duration"], small) if i == 0 else p("", small), content,
+                     p(item.get("Жетістік белгісі", ""), small), p(item.get("Ескертулер", ""), small)])
+    table = Table(data, colWidths=[61, 322, 81, 59], repeatRows=1, hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#829da3")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e4f1f2")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 14))
+    story.append(p("Балдық бағалау:", head))
+    story.append(p("0 — мақсатқа қол жеткізілмеді; 1 — шамамен 25%; 2 — шамамен 50%; 3 — мақсатқа толық қол жеткізілді (100%).", small))
+    story.append(p("Қорытынды / ескертулер: __________________________________________________________", small))
+    story.append(p("Бұл — ЖИ құрастырған жоба. Маман тексеріп, баланың нақты қажеттіліктеріне бейімдеуі тиіс.", small))
+    def footer(canvas, document):
+        canvas.setFont("Kaz", 7)
+        canvas.drawRightString(A4[0] - 36, 21, str(document.page))
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    return out.getvalue()
+
+
+if st.session_state.program:
+    program = st.session_state.program
+    st.subheader("📋 Жеке түзету-дамыту бағдарламасы")
+    st.info("Жетістік белгісі мен ескертулерді маман толтырады. Кестедегі мақсаттар мен нәтижелерді PDF жүктемей тұрып түзетуге болады.")
+    rows = st.data_editor(program["rows"], num_rows="dynamic", use_container_width=True, key="program_editor")
+    st.caption("Бағалау: 0 — қол жеткізілмеді; 1 — 25%; 2 — 50%; 3 — 100%. Бұл шкаланы ұйымның бекітілген бағалау тәртібімен сәйкестендіріңіз.")
     try:
-        pdf_bytes = make_pdf(edited)
-        st.download_button('📄 Бағдарламаны PDF форматында жүктеу', data=pdf_bytes, file_name='logo_plan_ai_bagdarlama.pdf', mime='application/pdf', type='primary')
+        pdf = make_pdf(program, rows)
+        st.download_button("📄 Бағдарламаны PDF форматында жүктеу", pdf, file_name="zheke_tuzetu_damytu_bagdarlamasy.pdf", mime="application/pdf", type="primary")
     except Exception as exc:
-        st.error('PDF дайындау кезінде қате шықты.')
-        with st.expander('Техникалық ақпарат'):
-            st.code(str(exc))
-    st.info('Бұл — ЖИ жасаған әдістемелік жоба. Қолданар алдында маман тексеріп, баланың нақты қажеттілігіне бейімдеуі тиіс.')
+        st.error("PDF дайындау кезінде қате шықты.")
+        st.code(str(exc))
 
 st.divider()
-st.caption('🔒 Нақты балалардың аты-жөнін, мекенжайын, медициналық құжаттарын немесе басқа жеке деректерін енгізбеңіз.')
-
+st.caption("🔒 Баланың аты-жөнін, ЖСН-ын, мекенжайын және медициналық құжаттарының фотосын ЖИ жүйесіне енгізбеңіз.")
